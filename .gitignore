@@ -41,3 +41,5 @@ docker-compose.override.yml
 
 # Video files
 *.mp4
+bot_stats.json
+video_cache
