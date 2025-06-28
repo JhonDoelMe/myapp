@@ -34,7 +34,8 @@ logger = logging.getLogger(__name__)
 # Константы
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB лимит Telegram
 CACHE_DIR = Path("video_cache")
-CACHE_EXPIRE_DAYS = 3 # Срок хранения кеша
+CACHE_EXPIRE_DAYS = 7
+MAX_CACHE_SIZE_GB = 10  # Лимит размера кеша в гигабайтах
 STATS_FILE = Path("bot_stats.json")
 
 # Создаем директорию для кеша
@@ -56,7 +57,6 @@ if STATS_FILE.exists():
     try:
         with open(STATS_FILE, "r") as f:
             loaded_stats = json.load(f)
-            # Обновляем статистику, сохраняя defaultdict для platform_stats и user_stats
             bot_stats.update(loaded_stats)
             bot_stats["platform_stats"] = defaultdict(int, loaded_stats.get("platform_stats", {}))
             bot_stats["user_stats"] = defaultdict(int, loaded_stats.get("user_stats", {}))
@@ -74,7 +74,6 @@ dp = Dispatcher()
 def save_stats():
     """Сохраняет статистику в файл"""
     try:
-        # Преобразуем defaultdict в обычный dict для сохранения
         stats_to_save = bot_stats.copy()
         stats_to_save["platform_stats"] = dict(bot_stats["platform_stats"])
         stats_to_save["user_stats"] = dict(bot_stats["user_stats"])
@@ -85,7 +84,7 @@ def save_stats():
         logger.error(f"Ошибка сохранения статистики: {str(e)}")
 
 def log_event(event: str, user_id: int = None, details: str = None):
-    """Улучшенное логирование событий"""
+    """Логирование событий"""
     log_msg = f"[EVENT] {event}"
     if user_id:
         log_msg += f" | User: {user_id}"
@@ -125,6 +124,24 @@ def clean_old_cache():
                 logger.info(f"Удален устаревший кеш: {file.name}")
             except Exception as e:
                 logger.error(f"Ошибка удаления кеша {file.name}: {str(e)}")
+
+def clean_cache_by_size():
+    """Очищает кеш при превышении максимального размера"""
+    try:
+        files = sorted(CACHE_DIR.glob("*"), key=lambda f: f.stat().st_mtime)
+        total_size = sum(f.stat().st_size for f in files)
+        
+        deleted_count = 0
+        while total_size > MAX_CACHE_SIZE_GB * 1024**3 and files:
+            oldest = files.pop(0)
+            total_size -= oldest.stat().st_size
+            oldest.unlink()
+            deleted_count += 1
+        
+        if deleted_count > 0:
+            logger.info(f"Очистка кеша по размеру: удалено {deleted_count} файлов, освобождено {total_size/1024**3:.2f}GB")
+    except Exception as e:
+        logger.error(f"Ошибка очистки кеша по размеру: {str(e)}")
 
 @dp.message(Command("start"))
 async def start(message: Message):
@@ -250,7 +267,6 @@ async def handle_links(message: Message):
                 await bot.delete_message(chat_id=message.chat.id, message_id=wait_msg.message_id)
             except Exception as e:
                 logger.warning(f"Failed to delete wait message: {str(e)}")
-        # Не удаляем файлы из кеша
         if file_path and not file_path.startswith(str(CACHE_DIR)):
             await async_remove_file(file_path)
 
@@ -268,6 +284,8 @@ def extract_url(text: str) -> str | None:
 
 async def download_video(url: str, url_hash: str) -> str:
     """Скачивает видео и сохраняет в кеш"""
+    clean_cache_by_size()  # Проверка размера перед скачиванием
+    
     output_path = str(CACHE_DIR / f"{url_hash}.mp4")
     command = [
         "yt-dlp",
@@ -297,7 +315,8 @@ async def download_more(callback: CallbackQuery):
 async def on_startup():
     """Действия при запуске бота"""
     logger.info("Cleaning old cache...")
-    clean_old_cache()
+    clean_old_cache()  # Сначала по времени
+    clean_cache_by_size()  # Затем по размеру
     logger.info("Bot starting...")
 
 async def main():
