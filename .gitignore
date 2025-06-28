@@ -38,3 +38,6 @@ docker-compose.override.yml
 # PyInstaller
 *.manifest
 *.spec
+
+# Video files
+*.mp4
