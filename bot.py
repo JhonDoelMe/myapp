@@ -44,7 +44,7 @@ bot_stats = {
     "user_stats": defaultdict(int),
     "last_activity": datetime.now().isoformat()
 }
-
+load_dotenv()
 bot = Bot(
     token=os.getenv("BOT_TOKEN"),
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
@@ -58,10 +58,6 @@ if not os.getenv("BOT_TOKEN"):
 if not shutil.which("yt-dlp"):
     logging.critical("yt-dlp не установлен")
     exit(1)
-# Проверка наличия ffmpeg
-if not shutil.which("ffmpeg"):
-    logging.critical("ffmpeg не установлен")
-    exit(1)
 # Загрузка статистики из файла
 if STATS_FILE.exists():
     try:
@@ -73,7 +69,6 @@ if STATS_FILE.exists():
     except Exception as e:
         logging.error(f"Ошибка загрузки статистики: {str(e)}")
 
-load_dotenv()
 
 # Настройка логирования
 def setup_logging():
