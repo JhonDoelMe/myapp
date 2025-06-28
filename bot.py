@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import asyncio
 import logging
@@ -20,26 +21,18 @@ from aiogram.types import (
 from aiogram.client.default import DefaultBotProperties
 from dotenv import load_dotenv
 
-# Конфигурация логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("bot.log", encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
-
 # Константы
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB лимит Telegram
 CACHE_DIR = Path("video_cache")
-CACHE_EXPIRE_DAYS = 7
-MAX_CACHE_SIZE_GB = 1  # Лимит размера кеша в гигабайтах
+LOG_DIR = Path("logs")  # Директория для логов
+CACHE_EXPIRE_DAYS = 3  # Хранение кеша 3 дня
+LOG_EXPIRE_DAYS = 3  # Хранение логов 3 дня
+MAX_CACHE_SIZE_GB = 1  # Максимальный размер кеша
 STATS_FILE = Path("bot_stats.json")
 
-# Создаем директорию для кеша
+# Создаем необходимые директории
 CACHE_DIR.mkdir(exist_ok=True)
+LOG_DIR.mkdir(exist_ok=True)
 
 # Инициализация статистики
 bot_stats = {
@@ -52,6 +45,23 @@ bot_stats = {
     "last_activity": datetime.now().isoformat()
 }
 
+bot = Bot(
+    token=os.getenv("BOT_TOKEN"),
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
+dp = Dispatcher()
+# Проверка наличия токена
+if not os.getenv("BOT_TOKEN"):
+    logging.critical("BOT_TOKEN не установлен")
+    exit(1)
+# Проверка наличия yt-dlp
+if not shutil.which("yt-dlp"):
+    logging.critical("yt-dlp не установлен")
+    exit(1)
+# Проверка наличия ffmpeg
+if not shutil.which("ffmpeg"):
+    logging.critical("ffmpeg не установлен")
+    exit(1)
 # Загрузка статистики из файла
 if STATS_FILE.exists():
     try:
@@ -61,15 +71,27 @@ if STATS_FILE.exists():
             bot_stats["platform_stats"] = defaultdict(int, loaded_stats.get("platform_stats", {}))
             bot_stats["user_stats"] = defaultdict(int, loaded_stats.get("user_stats", {}))
     except Exception as e:
-        logger.error(f"Ошибка загрузки статистики: {str(e)}")
+        logging.error(f"Ошибка загрузки статистики: {str(e)}")
 
 load_dotenv()
 
-bot = Bot(
-    token=os.getenv("BOT_TOKEN"),
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-)
-dp = Dispatcher()
+# Настройка логирования
+def setup_logging():
+    """Настраивает систему логирования с ротацией файлов"""
+    current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = LOG_DIR / f"bot_{current_time}.log"
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file, encoding='utf-8'),
+            logging.StreamHandler()
+        ]
+    )
+    return logging.getLogger(__name__)
+
+logger = setup_logging()
 
 def save_stats():
     """Сохраняет статистику в файл"""
@@ -84,12 +106,13 @@ def save_stats():
         logger.error(f"Ошибка сохранения статистики: {str(e)}")
 
 def log_event(event: str, user_id: int = None, details: str = None):
-    """Логирование событий"""
+    """Логирование событий с дополнительной информацией"""
     log_msg = f"[EVENT] {event}"
     if user_id:
         log_msg += f" | User: {user_id}"
     if details:
-        log_msg += f" | Details: {details[:100]}..." if len(details) > 100 else f" | Details: {details}"
+        truncated = details[:100] + "..." if len(details) > 100 else details
+        log_msg += f" | Details: {truncated}"
     logger.info(log_msg)
 
 def get_url_hash(url: str) -> str:
@@ -107,44 +130,62 @@ def get_platform(url: str) -> str:
     return "other"
 
 async def async_remove_file(path: str):
-    """Асинхронное удаление файла с логированием"""
+    """Асинхронное удаление файла с обработкой ошибок"""
     try:
         os.remove(path)
-        logger.info(f"Удален временный файл: {path}")
+        logger.info(f"Удален файл: {path}")
     except Exception as e:
         logger.error(f"Ошибка удаления файла {path}: {str(e)}")
 
-def clean_old_cache():
-    """Очищает старые файлы из кеша"""
+def clean_old_files(directory: Path, days: int, file_pattern: str = "*"):
+    """
+    Очищает старые файлы в указанной директории
+    :param directory: Директория для очистки
+    :param days: Максимальный возраст файлов в днях
+    :param file_pattern: Шаблон для поиска файлов
+    """
     now = datetime.now()
-    for file in CACHE_DIR.glob("*"):
-        if (now - datetime.fromtimestamp(file.stat().st_mtime)) > timedelta(days=CACHE_EXPIRE_DAYS):
-            try:
+    for file in directory.glob(file_pattern):
+        try:
+            file_age = now - datetime.fromtimestamp(file.stat().st_mtime)
+            if file_age > timedelta(days=days):
                 file.unlink()
-                logger.info(f"Удален устаревший кеш: {file.name}")
-            except Exception as e:
-                logger.error(f"Ошибка удаления кеша {file.name}: {str(e)}")
+                logger.info(f"Удален старый файл: {file.name} (возраст: {file_age.days} дней)")
+        except Exception as e:
+            logger.error(f"Ошибка обработки файла {file.name}: {str(e)}")
+
+def clean_old_logs():
+    """Очищает старые логи"""
+    clean_old_files(LOG_DIR, LOG_EXPIRE_DAYS, "*.log")
+
+def clean_old_cache():
+    """Очищает старый кеш видео"""
+    clean_old_files(CACHE_DIR, CACHE_EXPIRE_DAYS)
 
 def clean_cache_by_size():
     """Очищает кеш при превышении максимального размера"""
     try:
         files = sorted(CACHE_DIR.glob("*"), key=lambda f: f.stat().st_mtime)
         total_size = sum(f.stat().st_size for f in files)
+        max_size_bytes = MAX_CACHE_SIZE_GB * 1024**3
         
         deleted_count = 0
-        while total_size > MAX_CACHE_SIZE_GB * 1024**3 and files:
+        while total_size > max_size_bytes and files:
             oldest = files.pop(0)
-            total_size -= oldest.stat().st_size
+            file_size = oldest.stat().st_size
             oldest.unlink()
+            total_size -= file_size
             deleted_count += 1
+            logger.debug(f"Удален файл кеша: {oldest.name} ({file_size/1024**2:.2f} MB)")
         
         if deleted_count > 0:
-            logger.info(f"Очистка кеша по размеру: удалено {deleted_count} файлов, освобождено {total_size/1024**3:.2f}GB")
+            logger.info(f"Очистка кеша: удалено {deleted_count} файлов, текущий размер: {total_size/1024**3:.2f}GB")
     except Exception as e:
-        logger.error(f"Ошибка очистки кеша по размеру: {str(e)}")
+        logger.error(f"Ошибка очистки кеша: {str(e)}")
 
 @dp.message(Command("start"))
 async def start(message: Message):
+    """Обработчик команды /start"""
     bot_stats["user_stats"][str(message.from_user.id)] += 1
     save_stats()
     
@@ -163,6 +204,7 @@ async def start(message: Message):
 
 @dp.message(Command("stats"))
 async def show_stats(message: Message):
+    """Показывает подробную статистику"""
     stats_msg = (
         "📊 Детальна статистика:\n"
         f"• Всього запитів: {bot_stats['total_requests']}\n"
@@ -172,26 +214,27 @@ async def show_stats(message: Message):
         "📈 За платформами:\n"
     )
     
-    for platform, count in sorted(bot_stats["platform_stats"].items()):
-        platform_name = {
-            "tiktok": "TikTok",
-            "instagram": "Instagram", 
-            "youtube": "YouTube",
-            "other": "Інші"
-        }.get(platform, platform.capitalize())
-        
-        stats_msg += f"• {platform_name}: {count}\n"
+    platform_names = {
+        "tiktok": "TikTok",
+        "instagram": "Instagram", 
+        "youtube": "YouTube",
+        "other": "Інші"
+    }
+    
+    for platform, count in sorted(bot_stats["platform_stats"].items(), key=lambda x: x[1], reverse=True):
+        stats_msg += f"• {platform_names.get(platform, platform)}: {count}\n"
     
     await message.answer(stats_msg)
 
 @dp.message(F.text | F.caption)
 async def handle_links(message: Message):
+    """Обработчик ссылок на видео"""
     text = message.text or message.caption
     url = extract_url(text)
     user_id = message.from_user.id
     
     if not url:
-        log_event("No URL found", user_id)
+        log_event("URL not found", user_id)
         await message.answer("🔴 Не знайдено посилання. Спробуй ще раз!")
         return
 
@@ -202,7 +245,7 @@ async def handle_links(message: Message):
     bot_stats["platform_stats"][platform] += 1
     save_stats()
     
-    log_event("Message received", user_id, f"Text: {text[:50]}...")
+    log_event("Processing video", user_id, f"URL: {url[:50]}...")
 
     wait_msg = None
     file_path = None
@@ -215,10 +258,10 @@ async def handle_links(message: Message):
         if cached_file.exists():
             bot_stats["cache_hits"] += 1
             save_stats()
-            log_event("Cache hit", user_id, f"URL: {url}")
+            log_event("Cache used", user_id)
             file_path = str(cached_file)
         else:
-            log_event("Video processing started", user_id, f"URL: {url}")
+            log_event("Downloading video", user_id)
             wait_msg = await message.answer("⏳ Обробляю ваше відео...")
             
             start_time = datetime.now()
@@ -226,12 +269,11 @@ async def handle_links(message: Message):
             download_time = (datetime.now() - start_time).total_seconds()
             
             log_event("Video downloaded", user_id, 
-                     f"Path: {file_path}, Size: {os.path.getsize(file_path)/1024/1024:.2f}MB, "
-                     f"Time: {download_time:.2f}s")
+                     f"Size: {os.path.getsize(file_path)/1024**2:.2f}MB, Time: {download_time:.2f}s")
 
         file_size = os.path.getsize(file_path)
         if file_size > MAX_FILE_SIZE:
-            raise ValueError(f"Файл слишком большой ({file_size/1024/1024:.2f}MB)")
+            raise ValueError(f"File too large ({file_size/1024**2:.2f}MB)")
 
         video = FSInputFile(file_path)
         await message.answer_video(
@@ -244,33 +286,34 @@ async def handle_links(message: Message):
 
         bot_stats["successful_downloads"] += 1
         save_stats()
-        log_event("Video sent successfully", user_id)
+        log_event("Video sent", user_id)
 
     except subprocess.TimeoutExpired as e:
         bot_stats["failed_downloads"] += 1
         save_stats()
-        logger.error(f"Timeout error for user {user_id}: {str(e)}")
+        logger.error(f"Timeout: {str(e)}")
         await message.answer("🔴 Час завантаження вийшов. Спробуйте ще раз.")
     except subprocess.CalledProcessError as e:
         bot_stats["failed_downloads"] += 1
         save_stats()
-        logger.error(f"Download failed for user {user_id}. URL: {url}. Error: {str(e)}")
+        logger.error(f"Download failed: {str(e)}")
         await message.answer("🔴 Помилка завантаження відео. Перевірте посилання.")
     except Exception as e:
         bot_stats["failed_downloads"] += 1
         save_stats()
-        logger.error(f"Unexpected error for user {user_id}: {str(e)}", exc_info=True)
+        logger.error(f"Unexpected error: {str(e)}", exc_info=True)
         await message.answer("🔴 Сталася неочікувана помилка. Спробуйте інше посилання.")
     finally:
         if wait_msg:
             try:
                 await bot.delete_message(chat_id=message.chat.id, message_id=wait_msg.message_id)
             except Exception as e:
-                logger.warning(f"Failed to delete wait message: {str(e)}")
+                logger.warning(f"Failed to delete message: {str(e)}")
         if file_path and not file_path.startswith(str(CACHE_DIR)):
             await async_remove_file(file_path)
 
 def extract_url(text: str) -> str | None:
+    """Извлекает URL из текста"""
     import re
     url_pattern = (
         r'https?://(?:vm\.tiktok\.com|'
@@ -296,7 +339,7 @@ async def download_video(url: str, url_hash: str) -> str:
         url
     ]
     
-    logger.debug(f"Download command: {' '.join(command)}")
+    logger.debug(f"Executing: {' '.join(command)}")
     result = subprocess.run(command, check=True, timeout=120, capture_output=True, text=True)
     
     if result.stderr:
@@ -308,18 +351,21 @@ async def download_video(url: str, url_hash: str) -> str:
 
 @dp.callback_query(F.data == "download_more")
 async def download_more(callback: CallbackQuery):
-    log_event("Button pressed", callback.from_user.id, "download_more")
+    """Обработчик кнопки 'Скачать еще'"""
+    log_event("Download more", callback.from_user.id)
     await callback.answer()
     await callback.message.answer("Надішліть нове посилання на відео:")
 
 async def on_startup():
     """Действия при запуске бота"""
-    logger.info("Cleaning old cache...")
-    clean_old_cache()  # Сначала по времени
-    clean_cache_by_size()  # Затем по размеру
+    logger.info("Cleaning old files...")
+    clean_old_logs()
+    clean_old_cache()
+    clean_cache_by_size()
     logger.info("Bot starting...")
 
 async def main():
+    """Основная функция запуска бота"""
     await on_startup()
     await dp.start_polling(bot)
 
