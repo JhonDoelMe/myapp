@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # Константы
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB лимит Telegram
 CACHE_DIR = Path("video_cache")
-CACHE_EXPIRE_DAYS = 7
+CACHE_EXPIRE_DAYS = 3 # Срок хранения кеша
 STATS_FILE = Path("bot_stats.json")
 
 # Создаем директорию для кеша
