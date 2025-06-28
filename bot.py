@@ -54,10 +54,6 @@ dp = Dispatcher()
 if not os.getenv("BOT_TOKEN"):
     logging.critical("BOT_TOKEN не установлен")
     exit(1)
-# Проверка наличия yt-dlp
-if not shutil.which("yt-dlp"):
-    logging.critical("yt-dlp не установлен")
-    exit(1)
 # Загрузка статистики из файла
 if STATS_FILE.exists():
     try:
